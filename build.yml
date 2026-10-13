@@ -1,0 +1,102 @@
+name: Build ExoPlayer FFmpeg extension (arm64-v8a, LGPL)
+
+# 用法：在 GitHub 仓库页面 -> Actions -> 左侧选本 workflow -> 右侧 Run workflow 手动触发
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    # 若某天 ubuntu-22.04 不可用，可改为 ubuntu-20.04 或 ubuntu-24.04
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 11
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '11'
+
+      - name: Install NDK r21e / CMake / Build-tools
+        run: |
+          SDK="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
+          echo "SDK=$SDK"
+          CLI="$SDK/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$CLI" --licenses >/dev/null 2>&1 || true
+          "$CLI" "platforms;android-30" "build-tools;30.0.3" "ndk;21.4.7075529" "cmake;3.10.2.4988404"
+          echo "ANDROID_NDK_HOME=$SDK/ndk/21.4.7075529" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_ROOT=$SDK/ndk/21.4.7075529" >> "$GITHUB_ENV"
+
+      - name: Install ninja
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build
+
+      - name: Clone ExoPlayer 2.15.1 + patch (single ABI, drop dead jcenter)
+        run: |
+          git clone --depth 1 --branch r2.15.1 https://github.com/google/ExoPlayer.git exoplayer
+          sed -i '/jcenter()/d' exoplayer/build.gradle
+          cat >> exoplayer/extensions/ffmpeg/build.gradle <<'EOF'
+
+          android {
+              ndkVersion '21.4.7075529'
+              defaultConfig {
+                  minSdkVersion 21
+                  ndk {
+                      abiFilters 'arm64-v8a'
+                  }
+              }
+          }
+          EOF
+
+      - name: Clone FFmpeg 4.2 (only 4.x is compatible with this JNI)
+        run: |
+          git clone --depth 1 --branch release/4.2 https://github.com/FFmpeg/FFmpeg.git ffmpeg-src
+          ln -s "$PWD/ffmpeg-src" exoplayer/extensions/ffmpeg/src/main/jni/ffmpeg
+
+      - name: Build FFmpeg static libs (arm64-v8a, LGPL, 不传 --enable-gpl)
+        env:
+          NDK: ${{ env.ANDROID_NDK_HOME }}
+        run: |
+          set -e
+          DECODERS="aac mp3 ac3 eac3 truehd mlp dca vorbis opus flac alac amrnb amrwb pcm_mulaw pcm_alaw"
+          TOOLCHAIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          OPTS="--target-os=android --enable-static --disable-shared --disable-doc --disable-programs \
+                --disable-everything --disable-avdevice --disable-avformat --disable-swscale \
+                --disable-postproc --disable-avfilter --disable-symver --disable-avresample \
+                --enable-swresample --extra-ldexeflags=-pie"
+          for d in $DECODERS; do OPTS="$OPTS --enable-decoder=$d"; done
+          cd exoplayer/extensions/ffmpeg/src/main/jni/ffmpeg
+          ./configure \
+            --libdir=android-libs/arm64-v8a \
+            --arch=aarch64 --cpu=armv8-a \
+            --cross-prefix="$TOOLCHAIN/aarch64-linux-android21-" \
+            --nm="$TOOLCHAIN/aarch64-linux-android-nm" \
+            --ar="$TOOLCHAIN/aarch64-linux-android-ar" \
+            --ranlib="$TOOLCHAIN/aarch64-linux-android-ranlib" \
+            --strip="$TOOLCHAIN/aarch64-linux-android-strip" \
+            $OPTS
+          make -j"$(nproc)"
+          make install-libs
+          echo "---- android-libs/arm64-v8a ----"
+          ls -l android-libs/arm64-v8a
+
+      - name: Build AAR
+        run: |
+          cd exoplayer
+          chmod +x gradlew
+          ./gradlew :extension-ffmpeg:assembleRelease --no-daemon --stacktrace
+
+      - name: Inspect AAR
+        run: |
+          AAR=$(ls exoplayer/extensions/ffmpeg/build/outputs/aar/*.aar | head -n1)
+          echo "AAR = $AAR"
+          unzip -l "$AAR"
+
+      - name: Upload AAR
+        uses: actions/upload-artifact@v4
+        with:
+          name: exoplayer-ffmpeg-extension-2.15.1-arm64
+          path: exoplayer/extensions/ffmpeg/build/outputs/aar/*.aar

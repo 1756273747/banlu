@@ -1,8 +1,11 @@
 name: Build ExoPlayer FFmpeg extension (arm64-v8a, LGPL)
 
-# 用法：在 GitHub 仓库页面 -> Actions -> 左侧选本 workflow -> 右侧 Run workflow 手动触发
+# 用法：仓库页 -> Actions -> 左侧选本 workflow -> 右侧 Run workflow 手动触发
 on:
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -89,14 +92,25 @@ jobs:
           chmod +x gradlew
           ./gradlew :extension-ffmpeg:assembleRelease --no-daemon --stacktrace
 
-      - name: Inspect AAR
+      - name: Stage AAR
         run: |
           AAR=$(ls exoplayer/extensions/ffmpeg/build/outputs/aar/*.aar | head -n1)
           echo "AAR = $AAR"
           unzip -l "$AAR"
+          mkdir -p out
+          cp "$AAR" out/exoplayer-ffmpeg-extension-2.15.1-arm64.aar
 
-      - name: Upload AAR
+      - name: Upload artifact (登录后才能下载)
         uses: actions/upload-artifact@v4
         with:
           name: exoplayer-ffmpeg-extension-2.15.1-arm64
-          path: exoplayer/extensions/ffmpeg/build/outputs/aar/*.aar
+          path: out/*.aar
+
+      - name: Publish Release (公网可直接下载, 无需登录)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create ffmpeg-ext-2.15.1-arm64 out/*.aar \
+            --title "ExoPlayer FFmpeg extension 2.15.1 (arm64-v8a, LGPL)" \
+            --notes "LGPL-2.1 build of the ExoPlayer 2.15.1 FFmpeg audio extension. Contains libffmpegJNI.so for arm64-v8a only." \
+          || gh release upload ffmpeg-ext-2.15.1-arm64 out/*.aar --clobber

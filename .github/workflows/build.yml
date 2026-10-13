@@ -22,13 +22,19 @@ jobs:
           distribution: temurin
           java-version: '11'
 
-      - name: Install NDK r21e / CMake / Build-tools
+      - name: Install NDK r21e / CMake 3.10.2 / Build-tools
         run: |
           SDK="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
           echo "SDK=$SDK"
           CLI="$SDK/cmdline-tools/latest/bin/sdkmanager"
           yes | "$CLI" --licenses >/dev/null 2>&1 || true
-          "$CLI" "platforms;android-30" "build-tools;30.0.3" "ndk;21.4.7075529" "cmake;3.10.2.4988404"
+          echo "--- preinstalled cmake ----" ; ls -1 "$SDK/cmake" 2>/dev/null || true
+          # AGP 4.2.1 走旧版 "cmake server" 协议；CMake 3.20+ 已移除该协议，
+          # runner 预装的 3.22.1 会被 3.7.1+ 选中 -> generateJsonModelRelease NPE。
+          # 删掉预装版本，只保留官方配套的 3.10.2.4988404。
+          sudo rm -rf "$SDK/cmake"
+          "$CLI" "platforms;android-30" "build-tools;30.0.2" "build-tools;30.0.3" "ndk;21.4.7075529" "cmake;3.10.2.4988404"
+          echo "--- cmake after install ---" ; ls -1 "$SDK/cmake"
           echo "ANDROID_NDK_HOME=$SDK/ndk/21.4.7075529" >> "$GITHUB_ENV"
           echo "ANDROID_NDK_ROOT=$SDK/ndk/21.4.7075529" >> "$GITHUB_ENV"
 
@@ -45,6 +51,12 @@ jobs:
 
           android {
               ndkVersion '21.4.7075529'
+              externalNativeBuild {
+                  cmake {
+                      // 精确锁定，避免 3.7.1+ 选到 CMake 3.20+（无 cmake server -> NPE）
+                      version '3.10.2.4988404'
+                  }
+              }
               defaultConfig {
                   minSdkVersion 21
                   ndk {
